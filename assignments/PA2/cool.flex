@@ -11,6 +11,7 @@
 #include <cool-parse.h>
 #include <stringtab.h>
 #include <utilities.h>
+#include <string>
 
 /* The compiler assumes these identifiers. */
 #define yylval cool_yylval
@@ -31,8 +32,10 @@ extern FILE *fin; /* we read from this file */
 	if ( (result = fread( (char*)buf, sizeof(char), max_size, fin)) < 0) \
 		YY_FATAL_ERROR( "read() in flex scanner failed");
 
-char string_buf[MAX_STR_CONST]; /* to assemble string constants */
-char *string_buf_ptr;
+// char string_buf[MAX_STR_CONST]; /* to assemble string constants */
+// char *string_buf_ptr;
+
+std::string string_buf;
 
 extern int curr_lineno;
 extern int verbose_flag;
@@ -54,8 +57,8 @@ int cmt = 0;
 
 
 INTEGER         [0-9]+
-TID             [A-Z][A-z0-9]*
-OID             [a-z][A-z0-9]*
+TID             [A-Z][A-Za-z0-9_]*
+OID             [a-z][A-Za-z0-9_]*
 
 DARROW          =>
 ASSIGN          <-
@@ -63,7 +66,6 @@ LE              <=
 
 %x COMMENT
 %x STRING   
-%x ESC
 
 %%
 
@@ -75,18 +77,20 @@ LE              <=
 "(*"            BEGIN(COMMENT);
 
 <COMMENT>"(*"           cmt ++;
-<COMMENT>[^*\n]    
-<COMMENT>\*[^"*)"\n]
+<COMMENT>[^(*\n]+    
+<COMMENT>(\*[^*)\n]*)|(\([^*\n]*)
 
 <COMMENT>"*)"           {   if(!cmt) 
                                 BEGIN(INITIAL);
                             else
                                 cmt --;     }
 
-<COMMENT><<EOF>>        {   yylval.error_msg = "Unmatched *)";
+<COMMENT><<EOF>>        {   BEGIN(INITIAL);
+                            yylval.error_msg = "EOF in comment";
                             return ERROR;   }
 
-"*)"                    {   yylval.error_msg = "Unmatched *)";
+"*)"                    {   
+                            yylval.error_msg = "Unmatched *)";
                             return ERROR;   }
 
  /*
@@ -96,7 +100,7 @@ LE              <=
 {ASSIGN}        return ASSIGN;
 {LE}            return LE;
 
-[+\-*/=.@~<(){}:;]         return (int)*yytext;
+[+\-\*/=,.@~<(){}:;]         return (int)*yytext;
 
 
  /*
@@ -134,7 +138,7 @@ f(?i:alse)      { cool_yylval.boolean = 0;
   *
   */
 
-[ \b\t\f]+      
+[ \b\t\f\r\v]+      
 
 <INITIAL,COMMENT>\n              curr_lineno ++;
 
@@ -149,20 +153,21 @@ f(?i:alse)      { cool_yylval.boolean = 0;
                   return OBJECTID; }
 
 
-\"                  {   string_buf_ptr = string_buf;
-                        BEGIN(STRING);  }  
+\"                  {   string_buf.clear();
+                        BEGIN(STRING);  }
 
 <STRING>\"          {
-                        *(string_buf_ptr) = '\0';
                         BEGIN(INITIAL);
-                        yylval.symbol = stringtable.add_string(string_buf);
+                        if(string_buf.length() >= MAX_STR_CONST) {
+                            yylval.error_msg = "String constant too long";
+                            return ERROR;
+                        }
+                        
+                        yylval.symbol = stringtable.add_string((char*)string_buf.c_str());
                         return STR_CONST;
                     }
 
-<STRING>[^\"\\\n]*  {   
-                        memcpy(string_buf_ptr, yytext, yyleng);
-                        string_buf_ptr += yyleng;
-                    }
+<STRING>[^\"\\\0\n]*  string_buf += yytext;
 
 <STRING>\n          {     
                         curr_lineno ++;  
@@ -172,16 +177,42 @@ f(?i:alse)      { cool_yylval.boolean = 0;
                     }
 
 <STRING><<EOF>>     {
+                        BEGIN(INITIAL);  
                         yylval.error_msg = "EOF in string constant";
                         return ERROR;
                     }
 
 <STRING>{
+    \\n             string_buf += '\n';
+    \\t             string_buf += '\t';
+    \\b             string_buf += '\b';
+    \\f             string_buf += '\f';
+
     \\\n            {
                         curr_lineno ++;
-                        *string_buf_ptr++ = '\n';
+                        string_buf += '\n';
                     }
-}   
-       
+
+    \0[^"\n]*/\n    |
+    \0[^"\n]*\"     {
+                        BEGIN(INITIAL);
+                        yylval.error_msg = "String contains null character.";
+                        return ERROR;
+                    }
+
+    \\\0[^"\n]*/\n  |
+    \\\0[^"\n]*\"   {
+                        BEGIN(INITIAL);
+                        yylval.error_msg = "String contains escaped null character.";
+                        return ERROR;
+                    }
+
+    \\[^\n]         string_buf += yytext[1];
+}
+
+.                   {
+                        yylval.error_msg = yytext;
+                        return ERROR;
+                    }
 
 %%

@@ -94,4 +94,4 @@ class Main {
             self;
         }
     };
-};
+;
